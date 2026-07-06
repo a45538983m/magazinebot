@@ -1,4 +1,4 @@
-aiogram
-sqlalchemy
-openpyxl
-aiofiles
+aiogram>=3.3.0
+sqlalchemy>=2.0.0
+openpyxl>=3.1.0
+aiofiles>=23.2.0
