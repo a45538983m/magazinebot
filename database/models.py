@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, Table, DateTime
 from sqlalchemy.orm import declarative_base, relationship
+from datetime import datetime
 
 Base = declarative_base()
 
@@ -18,7 +19,7 @@ class Product(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     article = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
-    brand = Column(String, nullable=True)                        # <-- НОВОЕ: бренд
+    brand = Column(String, nullable=True)
     purchase_price = Column(Float, default=0.0)
     selling_price = Column(Float, default=0.0)
     stock_quantity = Column(Integer, default=0)
@@ -29,6 +30,8 @@ class Product(Base):
         secondary=product_compatibility,
         back_populates="products"
     )
+
+    purchases = relationship("Purchase", back_populates="product")
 
     def __repr__(self):
         return f"<Product(article={self.article}, name={self.name})>"
@@ -51,3 +54,18 @@ class CarModel(Base):
 
     def __repr__(self):
         return f"<CarModel(brand={self.brand}, model={self.model})>"
+
+
+class Purchase(Base):
+    __tablename__ = "purchases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    price = Column(Float, nullable=False)  # закупочная цена на момент прихода
+    created_at = Column(DateTime, default=datetime.now)
+
+    product = relationship("Product", back_populates="purchases")
+
+    def __repr__(self):
+        return f"<Purchase(product_id={self.product_id}, quantity={self.quantity})>"

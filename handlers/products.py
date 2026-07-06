@@ -2,16 +2,12 @@ from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from sqlalchemy import func
 
 from database.engine import get_session
 from database.models import Product
 
 router = Router()
-
-
-# Состояния для живого поиска
-class LiveSearchStates(StatesGroup):
-    typing = State()
 
 
 # Состояния для добавления товара
@@ -25,23 +21,10 @@ class AddProductStates(StatesGroup):
     confirm = State()
 
 
-# Состояния для поиска (старый, не используется, но оставлен)
-class SearchStates(StatesGroup):
-    waiting_for_search_query = State()
-
-
 # Клавиатура отмены (для добавления товара)
 def cancel_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="❌ Отмена")]],
-        resize_keyboard=True,
-    )
-
-
-# Клавиатура с кнопкой Назад (для живого поиска)
-def back_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="🔙 Назад")]],
         resize_keyboard=True,
     )
 
@@ -189,110 +172,33 @@ async def list_good_products(message: types.Message):
 
 
 # ===============================================
-# ЖИВОЙ ПОИСК (автодополнение)
+# КНОПКА ПОИСК – ИНСТРУКЦИЯ + КНОПКА ДЛЯ БЫСТРОГО ПОИСКА
 # ===============================================
 
 @router.message(F.text == "🔍 Поиск")
-async def search_start(message: types.Message, state: FSMContext):
-    await state.set_state(LiveSearchStates.typing)
-    await state.update_data(last_search_msg_id=None)
-    await message.answer(
-        "🔍 <b>Живой поиск</b>\n\n"
-        "Вводите буквы — бот покажет совпадения.\n"
-        "Чем больше букв, тем точнее результат.\n\n"
-        "Для выхода нажмите кнопку Назад.",
-        parse_mode="HTML",
-        reply_markup=back_keyboard(),
-    )
-
-
-@router.message(LiveSearchStates.typing, F.text == "🔙 Назад")
-async def back_from_search(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "📦 <b>Список товаров</b>\n\n"
-        "Выберите действие:",
-        parse_mode="HTML",
-        reply_markup=products_menu_keyboard(),
-    )
-
-
-@router.message(LiveSearchStates.typing)
-async def live_search(message: types.Message, state: FSMContext):
-    query = message.text.strip()
-    data = await state.get_data()
-    last_msg_id = data.get("last_search_msg_id")
-
-    # Удаляем предыдущее сообщение с результатами
-    if last_msg_id:
-        try:
-            await message.bot.delete_message(chat_id=message.chat.id, message_id=last_msg_id)
-        except:
-            pass
-
-    if not query or len(query) < 1:
-        await state.update_data(last_search_msg_id=None)
-        return
-
-    session = get_session()
-    try:
-        products = (
-            session.query(Product)
-            .filter(
-                (Product.name.ilike(f"{query}%")) |
-                (Product.article.ilike(f"{query}%")) |
-                (Product.name.ilike(f"%{query}%")) |
-                (Product.article.ilike(f"%{query}%")) |
-                (Product.brand.ilike(f"{query}%"))
-            )
-            .order_by(Product.name)
-            .limit(15)
-            .all()
-        )
-
-        if not products:
-            not_found_msg = await message.answer(
-                f"🔍 По запросу «<b>{query}</b>» ничего не найдено.\n"
-                f"Продолжайте ввод или нажмите Назад.",
-                parse_mode="HTML",
-                reply_markup=back_keyboard(),
-            )
-            await state.update_data(last_search_msg_id=not_found_msg.message_id)
-            return
-
-        text = f"🔍 <b>Поиск: «{query}»</b> — найдено {len(products)}:\n\n"
-        keyboard_rows = []
-
-        for p in products:
-            if p.stock_quantity == 0:
-                indicator = "⚫"
-            elif p.stock_quantity < 10:
-                indicator = "🔴"
-            else:
-                indicator = "🟢"
-
-            brand = f" | {p.brand}" if p.brand else ""
-            location = f" | 📍 {p.location_code}" if p.location_code else ""
-
-            text += (
-                f"{indicator} <b>{p.article}</b> — {p.name}{brand}\n"
-                f"   Цена: {p.selling_price:.2f} | Остаток: {p.stock_quantity} шт.{location}\n\n"
-            )
-
-            callback_data = f"product_info:{p.id}"
-            keyboard_rows.append([
+async def search_start(message: types.Message):
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
                 InlineKeyboardButton(
-                    text=f"{indicator} {p.article} — {p.name[:30]}{'...' if len(p.name) > 30 else ''}",
-                    callback_data=callback_data
+                    text="🔍 Нажмите для поиска",
+                    switch_inline_query_current_chat=""
                 )
-            ])
+            ]
+        ]
+    )
 
-        inline_kb = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
-        result_msg = await message.answer(text, parse_mode="HTML", reply_markup=inline_kb)
-        await state.update_data(last_search_msg_id=result_msg.message_id)
-
-    finally:
-        session.close()
+    await message.answer(
+        "🔍 <b>Быстрый поиск товара</b>\n\n"
+        "Нажмите кнопку ниже — в строке ввода появится <b>@SafarmagaBot</b>.\n"
+        "Начните вводить артикул или название товара.\n\n"
+        "Примеры запросов:\n"
+        "• <b>2108</b> — товары с артикулом 2108\n"
+        "• <b>фильтр</b> — товары со словом «фильтр»\n"
+        "• <b>Bosch</b> — товары бренда Bosch",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
 
 
 # ===============================================
@@ -387,7 +293,11 @@ async def process_article(message: types.Message, state: FSMContext):
 
     session = get_session()
     try:
-        existing = session.query(Product).filter(Product.article == article).first()
+        # Проверка уникальности БЕЗ учёта регистра
+        existing = session.query(Product).filter(
+            func.lower(Product.article) == article.lower()
+        ).first()
+        
         if existing:
             await message.answer(
                 f"⚠️ Товар с артикулом {article} уже существует!\n"
