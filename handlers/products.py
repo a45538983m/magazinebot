@@ -2,7 +2,6 @@ from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from sqlalchemy import func
 
 from database.engine import get_session
 from database.models import Product
@@ -10,7 +9,7 @@ from database.models import Product
 router = Router()
 
 
-# Состояния для добавления товара
+# Состояния
 class AddProductStates(StatesGroup):
     waiting_for_article = State()
     waiting_for_name = State()
@@ -21,7 +20,11 @@ class AddProductStates(StatesGroup):
     confirm = State()
 
 
-# Клавиатура отмены (для добавления товара)
+class LocationSearchStates(StatesGroup):
+    searching = State()
+
+
+# Клавиатуры
 def cancel_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="❌ Отмена")]],
@@ -29,12 +32,12 @@ def cancel_keyboard():
     )
 
 
-# Клавиатура для списка товаров
 def products_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📋 Все товары"), KeyboardButton(text="🔍 Поиск")],
             [KeyboardButton(text="🔴 Критичные остатки"), KeyboardButton(text="🟢 В наличии")],
+            [KeyboardButton(text="🔎 Где лежит"), KeyboardButton(text="📊 Остатки")],
             [KeyboardButton(text="🔙 Главное меню")],
         ],
         resize_keyboard=True,
@@ -62,7 +65,7 @@ async def back_to_main(message: types.Message):
 
 
 # ===============================================
-# ВСЕ ТОВАРЫ (с цветовой индикацией)
+# ВСЕ ТОВАРЫ
 # ===============================================
 
 @router.message(F.text == "📋 Все товары")
@@ -111,7 +114,7 @@ async def list_all_products(message: types.Message):
 
 
 # ===============================================
-# КРИТИЧНЫЕ ОСТАТКИ (только красные)
+# КРИТИЧНЫЕ ОСТАТКИ
 # ===============================================
 
 @router.message(F.text == "🔴 Критичные остатки")
@@ -140,7 +143,7 @@ async def list_critical_products(message: types.Message):
 
 
 # ===============================================
-# ТОВАРЫ В НАЛИЧИИ (только зелёные)
+# ТОВАРЫ В НАЛИЧИИ
 # ===============================================
 
 @router.message(F.text == "🟢 В наличии")
@@ -172,7 +175,160 @@ async def list_good_products(message: types.Message):
 
 
 # ===============================================
-# КНОПКА ПОИСК – ИНСТРУКЦИЯ + КНОПКА ДЛЯ БЫСТРОГО ПОИСКА
+# ПОИСК ПО МЕСТУ (ГДЕ ЛЕЖИТ)
+# ===============================================
+
+@router.message(F.text == "🔎 Где лежит")
+async def search_by_location_start(message: types.Message, state: FSMContext):
+    await state.set_state(LocationSearchStates.searching)
+    await message.answer(
+        "🔎 <b>Поиск по месту хранения</b>\n\n"
+        "Введите артикул или название товара, чтобы узнать где он лежит:",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="🔙 Назад")]],
+            resize_keyboard=True,
+        ),
+    )
+
+
+@router.message(LocationSearchStates.searching, F.text == "🔙 Назад")
+async def back_from_location_search(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "📦 <b>Список товаров</b>\n\nВыберите действие:",
+        parse_mode="HTML",
+        reply_markup=products_menu_keyboard(),
+    )
+
+
+@router.message(LocationSearchStates.searching)
+async def process_location_search(message: types.Message, state: FSMContext):
+    query = message.text.strip()
+
+    if not query:
+        await message.answer("⚠️ Введите артикул или название товара:")
+        return
+
+    session = get_session()
+    try:
+        products = (
+            session.query(Product)
+            .filter(
+                (Product.article.ilike(f"%{query}%")) |
+                (Product.name.ilike(f"%{query}%"))
+            )
+            .order_by(Product.name)
+            .limit(10)
+            .all()
+        )
+
+        if not products:
+            await message.answer(
+                f"🔍 По запросу «{query}» ничего не найдено.",
+                reply_markup=ReplyKeyboardMarkup(
+                    keyboard=[[KeyboardButton(text="🔙 Назад")]],
+                    resize_keyboard=True,
+                ),
+            )
+            return
+
+        text = f"🔎 <b>Результаты поиска «{query}»:</b>\n\n"
+        for p in products:
+            if p.stock_quantity == 0:
+                indicator = "⚫"
+            elif p.stock_quantity < 10:
+                indicator = "🔴"
+            else:
+                indicator = "🟢"
+
+            location = f"<b>{p.location_code}</b>" if p.location_code else "❓ не указано"
+            brand = f" | 🏭 {p.brand}" if p.brand else ""
+
+            text += (
+                f"{indicator} <b>{p.article}</b> — {p.name}{brand}\n"
+                f"   📍 Место: {location} | Остаток: {p.stock_quantity} шт.\n"
+                f"   💵 Цена: {p.selling_price:.2f}\n\n"
+            )
+
+        await message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="🔙 Назад")]],
+                resize_keyboard=True,
+            ),
+        )
+
+    finally:
+        session.close()
+
+
+# ===============================================
+# ОБЩИЕ ОСТАТКИ (СВОДКА)
+# ===============================================
+
+@router.message(F.text == "📊 Остатки")
+async def show_stock_summary(message: types.Message):
+    session = get_session()
+    try:
+        total_products = session.query(Product).count()
+        total_in_stock = session.query(Product).filter(Product.stock_quantity > 0).count()
+        out_of_stock = session.query(Product).filter(Product.stock_quantity == 0).count()
+        low_stock = session.query(Product).filter(Product.stock_quantity > 0, Product.stock_quantity < 10).count()
+        good_stock = session.query(Product).filter(Product.stock_quantity >= 10).count()
+
+        stock_value_purchase = session.query(Product).with_entities(
+            (Product.stock_quantity * Product.purchase_price)
+        ).all()
+        total_purchase_value = sum(row[0] for row in stock_value_purchase if row[0])
+
+        stock_value_selling = session.query(Product).with_entities(
+            (Product.stock_quantity * Product.selling_price)
+        ).all()
+        total_selling_value = sum(row[0] for row in stock_value_selling if row[0])
+
+        no_location = session.query(Product).filter(
+            (Product.location_code == None) | (Product.location_code == "")
+        ).count()
+
+        text = (
+            "📊 <b>СВОДКА ПО ОСТАТКАМ</b>\n\n"
+            f"📦 Всего товаров: <b>{total_products}</b>\n"
+            f"✅ В наличии: <b>{total_in_stock}</b>\n"
+            f"⚫ Нет в наличии: <b>{out_of_stock}</b>\n"
+            f"🔴 Мало (менее 10): <b>{low_stock}</b>\n"
+            f"🟢 Достаточно (10+): <b>{good_stock}</b>\n"
+            f"📍 Без места: <b>{no_location}</b>\n\n"
+            f"💰 Общая закупочная стоимость: <b>{total_purchase_value:.2f}</b>\n"
+            f"💵 Общая розничная стоимость: <b>{total_selling_value:.2f}</b>"
+        )
+
+        products_with_location = (
+            session.query(Product)
+            .filter(Product.location_code != None, Product.location_code != "", Product.stock_quantity > 0)
+            .order_by(Product.location_code)
+            .limit(30)
+            .all()
+        )
+
+        if products_with_location:
+            text += "\n\n📍 <b>Товары по местам:</b>\n"
+            current_location = None
+            for p in products_with_location:
+                if p.location_code != current_location:
+                    current_location = p.location_code
+                    text += f"\n<b>📌 {current_location}:</b>\n"
+                text += f"  • {p.article} — {p.name[:25]} ({p.stock_quantity} шт.)\n"
+
+        await message.answer(text, parse_mode="HTML")
+
+    finally:
+        session.close()
+
+
+# ===============================================
+# КНОПКА ПОИСК
 # ===============================================
 
 @router.message(F.text == "🔍 Поиск")
@@ -202,7 +358,7 @@ async def search_start(message: types.Message):
 
 
 # ===============================================
-# КАРТОЧКА ТОВАРА (по клику в поиске)
+# КАРТОЧКА ТОВАРА
 # ===============================================
 
 @router.callback_query(F.data.startswith("product_info:"))
@@ -227,7 +383,6 @@ async def show_product_info(callback: types.CallbackQuery):
         brand_text = f"\n🏭 Бренд: <b>{product.brand}</b>" if product.brand else ""
         location_text = f"\n📍 Место: <b>{product.location_code}</b>" if product.location_code else ""
 
-        # Совместимые модели
         compat_text = ""
         if product.compatible_models:
             models = []
@@ -293,11 +448,7 @@ async def process_article(message: types.Message, state: FSMContext):
 
     session = get_session()
     try:
-        # Проверка уникальности БЕЗ учёта регистра
-        existing = session.query(Product).filter(
-            func.lower(Product.article) == article.lower()
-        ).first()
-        
+        existing = session.query(Product).filter(Product.article == article).first()
         if existing:
             await message.answer(
                 f"⚠️ Товар с артикулом {article} уже существует!\n"
