@@ -5,3 +5,5 @@ __pycache__/
 temp/
 venv/
 .env
+backups/
+bot_errors.log
