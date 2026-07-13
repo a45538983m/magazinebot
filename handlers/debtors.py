@@ -17,6 +17,7 @@ class DebtorStates(StatesGroup):
     waiting_for_payment_amount = State()
     add_name = State()
     add_phone = State()
+    search_query = State()
 
 
 # ===============================================
@@ -26,7 +27,7 @@ class DebtorStates(StatesGroup):
 def debtors_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📋 Все должники")],
+            [KeyboardButton(text="📋 Все должники"), KeyboardButton(text="🔍 Найти должника")],
             [KeyboardButton(text="➕ Добавить должника")],
             [KeyboardButton(text="🔙 Главное меню")],
         ],
@@ -51,6 +52,13 @@ def skip_phone_keyboard():
     )
 
 
+def back_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🔙 Назад")]],
+        resize_keyboard=True,
+    )
+
+
 # ===============================================
 # ГЛАВНОЕ МЕНЮ ДОЛЖНИКОВ
 # ===============================================
@@ -63,6 +71,100 @@ async def debtors_menu(message: types.Message):
         parse_mode="HTML",
         reply_markup=debtors_menu_keyboard(),
     )
+
+
+# ===============================================
+# ПОИСК ДОЛЖНИКА
+# ===============================================
+
+@router.message(F.text == "🔍 Найти должника")
+async def search_debtor_start(message: types.Message, state: FSMContext):
+    await state.set_state(DebtorStates.search_query)
+    await message.answer(
+        "🔍 <b>Поиск должника</b>\n\n"
+        "Введите имя или номер телефона должника:\n\n"
+        "Примеры:\n"
+        "• <b>Али</b> — найдёт всех с именем Али\n"
+        "• <b>92888</b> — найдёт по части номера",
+        parse_mode="HTML",
+        reply_markup=back_keyboard(),
+    )
+
+
+@router.message(DebtorStates.search_query, F.text == "🔙 Назад")
+async def back_from_search(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "👥 <b>Должники</b>\n\nВыберите действие:",
+        parse_mode="HTML",
+        reply_markup=debtors_menu_keyboard(),
+    )
+
+
+@router.message(DebtorStates.search_query)
+async def search_debtor(message: types.Message, state: FSMContext):
+    query = message.text.strip()
+
+    if not query:
+        await message.answer("⚠️ Введите имя или номер телефона:")
+        return
+
+    session = get_session()
+    try:
+        # Поиск по имени ИЛИ по номеру телефона
+        debtors = (
+            session.query(Debtor)
+            .filter(
+                (Debtor.name.ilike(f"%{query}%")) |
+                (Debtor.phone.ilike(f"%{query}%"))
+            )
+            .order_by(Debtor.name)
+            .limit(15)
+            .all()
+        )
+
+        if not debtors:
+            await message.answer(
+                f"🔍 По запросу «<b>{query}</b>» ничего не найдено.\n"
+                f"Попробуйте другой запрос или нажмите Назад:",
+                parse_mode="HTML",
+                reply_markup=back_keyboard(),
+            )
+            return
+
+        text = f"🔍 <b>Результаты поиска «{query}»:</b>\n\n"
+        keyboard_rows = []
+
+        for d in debtors:
+            # Считаем общий долг
+            total_debt = 0
+            for sale in d.sales:
+                paid = sum(p.amount for p in sale.payments)
+                remaining = sale.total_amount - paid
+                if remaining > 0:
+                    total_debt += remaining
+
+            phone = f" | 📞 {d.phone}" if d.phone else ""
+            if total_debt > 0:
+                text += f"🔴 <b>{d.name}</b>{phone} — долг: <b>{total_debt:.2f}</b>\n"
+            else:
+                text += f"🟢 <b>{d.name}</b>{phone} — долгов нет\n"
+
+            keyboard_rows.append([
+                InlineKeyboardButton(
+                    text=f"{'🔴' if total_debt > 0 else '🟢'} {d.name} ({total_debt:.2f})",
+                    callback_data=f"debtor_detail:{d.id}"
+                )
+            ])
+
+        if keyboard_rows:
+            inline_kb = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+            await message.answer(text, parse_mode="HTML", reply_markup=inline_kb)
+        else:
+            await message.answer(text, parse_mode="HTML")
+
+    finally:
+        session.close()
 
 
 # ===============================================
@@ -152,7 +254,6 @@ async def list_all_debtors(message: types.Message):
         keyboard_rows = []
 
         for d in debtors:
-            # Считаем общий долг
             total_debt = 0
             for sale in d.sales:
                 paid = sum(p.amount for p in sale.payments)
@@ -293,7 +394,6 @@ async def process_payment(message: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # Проверяем остаток долга
         paid = sum(p.amount for p in sale.payments)
         remaining = sale.total_amount - paid
 
@@ -306,7 +406,6 @@ async def process_payment(message: types.Message, state: FSMContext):
             )
             return
 
-        # Создаём платёж
         payment = Payment(
             sale_id=sale.id,
             amount=amount,

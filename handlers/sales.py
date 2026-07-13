@@ -22,6 +22,7 @@ class SaleStates(StatesGroup):
     confirm_sale = State()
     payment_method = State()
     new_debtor_name = State()
+    new_debtor_phone = State() 
     select_debtor = State()
 
 
@@ -502,9 +503,43 @@ async def process_new_debtor_name(message: types.Message, state: FSMContext):
         await message.answer("⚠️ Имя не может быть пустым. Введите имя:")
         return
 
+    await state.update_data(new_debtor_name=name)
+    await state.set_state(SaleStates.new_debtor_phone)  # <-- новое состояние
+    await message.answer(
+        f"Имя: <b>{name}</b>\n\n"
+        f"Введите номер телефона (или нажмите Пропустить):",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="⏭️ Пропустить")],
+                [KeyboardButton(text="❌ Отмена")],
+            ],
+            resize_keyboard=True,
+        ),
+    )
+
+
+# Новое состояние и обработчик
+@router.message(SaleStates.new_debtor_phone)
+async def process_new_debtor_phone(message: types.Message, state: FSMContext):
+    text = message.text.strip()
+
+    if text == "⏭️ Пропустить":
+        phone = None
+    elif text == "❌ Отмена":
+        await state.clear()
+        from handlers.start import main_keyboard
+        await message.answer("❌ Продажа отменена.", reply_markup=main_keyboard())
+        return
+    else:
+        phone = text
+
+    data = await state.get_data()
+    name = data.get("new_debtor_name")
+
     session = get_session()
     try:
-        debtor = Debtor(name=name)
+        debtor = Debtor(name=name, phone=phone)
         session.add(debtor)
         session.commit()
         debtor_id = debtor.id
@@ -516,7 +551,6 @@ async def process_new_debtor_name(message: types.Message, state: FSMContext):
         session.close()
 
     await process_sale_completion(message, state, debtor_id=debtor_id)
-
 
 # ===============================================
 # ЗАВЕРШЕНИЕ ПРОДАЖИ

@@ -11,6 +11,7 @@ from handlers.purchases import router as purchases_router
 from handlers.cars import router as cars_router
 from handlers.sales import router as sales_router
 from handlers.debtors import router as debtors_router
+from handlers.reports import router as reports_router
 
 
 async def main():
@@ -27,6 +28,7 @@ async def main():
     dp.include_router(cars_router)
     dp.include_router(sales_router)
     dp.include_router(debtors_router)
+    dp.include_router(reports_router)
     # Inline-режим для поиска товаров
     @dp.inline_query()
     async def inline_search(inline_query):
