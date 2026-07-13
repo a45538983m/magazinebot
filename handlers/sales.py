@@ -2,10 +2,9 @@ from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from sqlalchemy import func
 
 from database.engine import get_session
-from database.models import Product, Sale
+from database.models import Product, Sale, Debtor, Payment
 
 router = Router()
 
@@ -21,6 +20,9 @@ class SaleStates(StatesGroup):
     waiting_for_discount_type = State()
     waiting_for_discount_value = State()
     confirm_sale = State()
+    payment_method = State()
+    new_debtor_name = State()
+    select_debtor = State()
 
 
 # ===============================================
@@ -64,6 +66,17 @@ def confirm_sale_keyboard():
     )
 
 
+def payment_method_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="💵 Оплата сейчас")],
+            [KeyboardButton(text="📝 В долг")],
+            [KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+    )
+
+
 # ===============================================
 # НАЧАЛО ПРОДАЖИ
 # ===============================================
@@ -96,16 +109,16 @@ async def search_product_for_sale(message: types.Message, state: FSMContext):
     session = get_session()
     try:
         products = (
-    session.query(Product)
-    .filter(
-        (Product.article.ilike(f"%{query}%")) |
-        (Product.name.ilike(f"%{query}%")) |
-        (Product.brand.ilike(f"%{query}%"))
-    )
-    .order_by(Product.name)
-    .limit(10)
-    .all()
-)
+            session.query(Product)
+            .filter(
+                (Product.article.ilike(f"%{query}%")) |
+                (Product.name.ilike(f"%{query}%")) |
+                (Product.brand.ilike(f"%{query}%"))
+            )
+            .order_by(Product.name)
+            .limit(10)
+            .all()
+        )
 
         if not products:
             await message.answer(
@@ -366,7 +379,6 @@ async def show_final_check(message, state: FSMContext):
 
     total_sum = sum(item["total"] for item in cart)
 
-    # Рассчитываем скидку
     if discount_type == "percent":
         discount_amount = total_sum * discount_value / 100
     elif discount_type == "fixed":
@@ -404,6 +416,113 @@ async def show_final_check(message, state: FSMContext):
 
 @router.message(SaleStates.confirm_sale, F.text == "✅ Подтвердить продажу")
 async def confirm_sale(message: types.Message, state: FSMContext):
+    await state.set_state(SaleStates.payment_method)
+    await message.answer(
+        "💰 <b>Выберите способ оплаты:</b>",
+        parse_mode="HTML",
+        reply_markup=payment_method_keyboard(),
+    )
+
+
+@router.message(SaleStates.payment_method, F.text == "💵 Оплата сейчас")
+async def pay_now(message: types.Message, state: FSMContext):
+    await process_sale_completion(message, state, debtor_id=None)
+
+
+@router.message(SaleStates.payment_method, F.text == "📝 В долг")
+async def pay_debt(message: types.Message, state: FSMContext):
+    session = get_session()
+    try:
+        debtors = session.query(Debtor).order_by(Debtor.name).all()
+
+        keyboard_rows = []
+        for d in debtors[:15]:
+            phone = f" | 📞 {d.phone}" if d.phone else ""
+            keyboard_rows.append([
+                InlineKeyboardButton(
+                    text=f"{d.name}{phone}",
+                    callback_data=f"debtor_select:{d.id}"
+                )
+            ])
+
+        keyboard_rows.append([
+            InlineKeyboardButton(text="➕ Новый должник", callback_data="debtor_new")
+        ])
+
+        inline_kb = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+        await state.set_state(SaleStates.select_debtor)
+        await message.answer(
+            "📝 <b>Выберите должника или создайте нового:</b>",
+            parse_mode="HTML",
+            reply_markup=inline_kb,
+        )
+
+    finally:
+        session.close()
+
+
+# ===============================================
+# ВЫБОР ДОЛЖНИКА
+# ===============================================
+
+@router.callback_query(F.data.startswith("debtor_select:"))
+async def select_debtor(callback: types.CallbackQuery, state: FSMContext):
+    debtor_id = int(callback.data.split(":")[1])
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except:
+        pass
+    await process_sale_completion(callback.message, state, debtor_id=debtor_id)
+
+
+# ===============================================
+# НОВЫЙ ДОЛЖНИК
+# ===============================================
+
+@router.callback_query(F.data == "debtor_new")
+async def new_debtor_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except:
+        pass
+    await state.set_state(SaleStates.new_debtor_name)
+    await callback.message.answer(
+        "Введите имя нового должника:",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(SaleStates.new_debtor_name)
+async def process_new_debtor_name(message: types.Message, state: FSMContext):
+    name = message.text.strip()
+
+    if not name:
+        await message.answer("⚠️ Имя не может быть пустым. Введите имя:")
+        return
+
+    session = get_session()
+    try:
+        debtor = Debtor(name=name)
+        session.add(debtor)
+        session.commit()
+        debtor_id = debtor.id
+    except Exception as e:
+        session.rollback()
+        await message.answer(f"❌ Ошибка при создании должника: {e}")
+        return
+    finally:
+        session.close()
+
+    await process_sale_completion(message, state, debtor_id=debtor_id)
+
+
+# ===============================================
+# ЗАВЕРШЕНИЕ ПРОДАЖИ
+# ===============================================
+
+async def process_sale_completion(message, state: FSMContext, debtor_id=None):
     data = await state.get_data()
     cart = data.get("cart", [])
     discount_type = data.get("discount_type")
@@ -445,7 +564,6 @@ async def confirm_sale(message: types.Message, state: FSMContext):
 
             product.stock_quantity -= item["quantity"]
 
-            # Цена за единицу с учётом скидки (пропорционально)
             item_discount_share = (item["total"] / total_sum) * discount_amount if total_sum > 0 else 0
             discounted_total = item["total"] - item_discount_share
             discounted_price = discounted_total / item["quantity"] if item["quantity"] > 0 else item["price"]
@@ -454,27 +572,34 @@ async def confirm_sale(message: types.Message, state: FSMContext):
                 product_id=product.id,
                 quantity=item["quantity"],
                 price=round(discounted_price, 2),
+                total_amount=round(discounted_total, 2),
+                debtor_id=debtor_id,
             )
             session.add(sale)
 
         session.commit()
 
-        # Итоговый чек
-        text = "✅ <b>ПРОДАЖА ЗАВЕРШЕНА!</b>\n\n"
-        text += "🧾 <b>ЧЕК:</b>\n\n"
-        for item in cart:
-            text += f"• {item['article']} — {item['quantity']} шт. × {item['price']:.2f} = {item['total']:.2f}\n"
-
-        text += f"\n<b>Сумма: {total_sum:.2f}</b>"
-        if discount_amount > 0:
-            if discount_type == "percent":
-                text += f"\n<b>Скидка: {discount_value:.0f}% (-{discount_amount:.2f})</b>"
-            else:
-                text += f"\n<b>Скидка: -{discount_amount:.2f}</b>"
-        text += f"\n<b>ИТОГО: {final_sum:.2f}</b>"
-
         from handlers.start import main_keyboard
-        await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
+
+        if debtor_id:
+            debtor = session.query(Debtor).filter(Debtor.id == debtor_id).first()
+            debtor_name = debtor.name if debtor else "Неизвестно"
+            await message.answer(
+                f"✅ <b>ПРОДАЖА В ДОЛГ!</b>\n\n"
+                f"Должник: <b>{debtor_name}</b>\n"
+                f"Сумма долга: <b>{final_sum:.2f}</b>\n\n"
+                f"Товар списан со склада.",
+                parse_mode="HTML",
+                reply_markup=main_keyboard(),
+            )
+        else:
+            await message.answer(
+                f"✅ <b>ПРОДАЖА ЗАВЕРШЕНА!</b>\n\n"
+                f"Оплата получена.\n"
+                f"Сумма: <b>{final_sum:.2f}</b>",
+                parse_mode="HTML",
+                reply_markup=main_keyboard(),
+            )
 
     except Exception as e:
         session.rollback()

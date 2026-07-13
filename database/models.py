@@ -75,10 +75,41 @@ class Sale(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity = Column(Integer, nullable=False)
-    price = Column(Float, nullable=False)  # цена продажи на момент
+    price = Column(Float, nullable=False)
+    total_amount = Column(Float, nullable=False, default=0.0)  # полная сумма позиции
+    debtor_id = Column(Integer, ForeignKey("debtors.id"), nullable=True)  # если продажа в долг
     created_at = Column(DateTime, default=datetime.now)
 
     product = relationship("Product", back_populates="sales")
+    debtor = relationship("Debtor", back_populates="sales")
+    payments = relationship("Payment", back_populates="sale")
 
     def __repr__(self):
-        return f"<Sale(product_id={self.product_id}, quantity={self.quantity})>"
+        return f"<Sale(id={self.id}, total={self.total_amount})>"
+    
+class Debtor(Base):
+    __tablename__ = "debtors"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    sales = relationship("Sale", back_populates="debtor")
+
+    def __repr__(self):
+        return f"<Debtor(name={self.name})>"
+
+
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sale_id = Column(Integer, ForeignKey("sales.id"), nullable=False)
+    amount = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+    sale = relationship("Sale", back_populates="payments")
+
+    def __repr__(self):
+        return f"<Payment(sale_id={self.sale_id}, amount={self.amount})>"
