@@ -89,16 +89,16 @@ async def search_product_for_purchase(message: types.Message, state: FSMContext)
     try:
         # РЕГИСТРОНЕЗАВИСИМЫЙ ПОИСК
         products = (
-            session.query(Product)
-            .filter(
-                (func.lower(Product.article).ilike(f"%{query.lower()}%")) |
-                (func.lower(Product.name).ilike(f"%{query.lower()}%")) |
-                (func.lower(Product.brand).ilike(f"%{query.lower()}%"))
-            )
-            .order_by(Product.name)
-            .limit(10)
-            .all()
-        )
+    session.query(Product)
+    .filter(
+        (Product.article.ilike(f"%{query}%")) |
+        (Product.name.ilike(f"%{query}%")) |
+        (Product.brand.ilike(f"%{query}%"))
+    )
+    .order_by(Product.name)
+    .limit(10)
+    .all()
+)
 
         if not products:
             await message.answer(

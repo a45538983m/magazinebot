@@ -24,7 +24,7 @@ class Product(Base):
     selling_price = Column(Float, default=0.0)
     stock_quantity = Column(Integer, default=0)
     location_code = Column(String, nullable=True)
-
+    sales = relationship("Sale", back_populates="product")
     compatible_models = relationship(
         "CarModel",
         secondary=product_compatibility,
@@ -69,3 +69,16 @@ class Purchase(Base):
 
     def __repr__(self):
         return f"<Purchase(product_id={self.product_id}, quantity={self.quantity})>"
+class Sale(Base):
+    __tablename__ = "sales"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    price = Column(Float, nullable=False)  # цена продажи на момент
+    created_at = Column(DateTime, default=datetime.now)
+
+    product = relationship("Product", back_populates="sales")
+
+    def __repr__(self):
+        return f"<Sale(product_id={self.product_id}, quantity={self.quantity})>"

@@ -9,6 +9,7 @@ from handlers.start import router as start_router
 from handlers.products import router as products_router
 from handlers.purchases import router as purchases_router
 from handlers.cars import router as cars_router
+from handlers.sales import router as sales_router
 
 
 async def main():
@@ -23,7 +24,7 @@ async def main():
     dp.include_router(products_router)
     dp.include_router(purchases_router)
     dp.include_router(cars_router)
-
+    dp.include_router(sales_router)
     # Inline-режим для поиска товаров
     @dp.inline_query()
     async def inline_search(inline_query):
@@ -52,16 +53,16 @@ async def main():
 
             # Ищем по всем полям
             products = (
-                session.query(Product)
-                .filter(
-                    (Product.article.ilike(f"%{query}%")) |
-                    (Product.name.ilike(f"%{query}%")) |
-                    (Product.brand.ilike(f"%{query}%"))
-                )
-                .order_by(Product.name)
-                .limit(20)
-                .all()
-            )
+    session.query(Product)
+    .filter(
+        (Product.article.ilike(f"%{query}%")) |
+        (Product.name.ilike(f"%{query}%")) |
+        (Product.brand.ilike(f"%{query}%"))
+    )
+    .order_by(Product.name)
+    .limit(20)
+    .all()
+)
 
             print(f"Найдено товаров: {len(products)}")  # ОТЛАДКА
 
